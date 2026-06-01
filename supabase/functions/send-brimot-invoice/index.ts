@@ -1,14 +1,14 @@
 /**
- * Envoi d'email facture/devis Brimot (PDF joint + lien consultation) via Resend.
+ * Envoi d'email facture/devis Brimot (PDF joint + lien consultation) via Brevo.
  *
  * Important : on renvoie toujours HTTP 200 + JSON { ok, error? } pour les erreurs « métier »,
  * afin que supabase.functions.invoke remonte le détail dans `data` et pas seulement « non-2xx ».
  *
  * Déployer avec JWT désactivé côté passerelle (évite « non-2xx » avant le code) :
  *   supabase functions deploy send-brimot-invoice --no-verify-jwt
- * (auth toujours vérifiée dans ce fichier via getUser + utilisateurs.role)
- * Secrets : RESEND_API_KEY, optionnel BRIMOT_FROM_EMAIL, optionnel BRIMOT_REPLY_TO_EMAIL
- *   From : une seule adresse sur un domaine vérifié chez Resend (ex. noreply@colixo.ch) suffit pour l’envoi.
+ * (auth toujours vérifiée dans ce fichier via getUser + profiles.role)
+ * Secrets : BREVO_API_KEY, optionnel BRIMOT_FROM_EMAIL, optionnel BRIMOT_REPLY_TO_EMAIL
+ *   From : une seule adresse sur un domaine vérifié chez Brevo (ex. noreply@colixo.ch) suffit pour l’envoi.
  *   Reply-To / signature : le client reçoit le bon contact si reply_to est envoyé (payload reply_to ou secret BRIMOT_REPLY_TO_EMAIL)
  *   et si la signature dans le corps mentionne le mail métier (ex. info@brimot.ch).
  */
@@ -19,7 +19,7 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-colixo-user-id, x-colixo-user-role",
+    "authorization, x-client-info, apikey, content-type",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -37,7 +37,7 @@ type Body = {
   view_url?: string;
   pdf_base64?: string;
   pdf_filename?: string;
-  /** Réponse « Répondre » vers ce mail (ex. info@brimot.ch) si différent du From Resend */
+  /** Réponse « Répondre » vers ce mail (ex. info@brimot.ch) si différent du From Brevo */
   reply_to?: string;
 };
 
@@ -80,46 +80,52 @@ Deno.serve(async (req) => {
   }
   const supabaseAdmin = createClient(supabaseUrl, serviceKey);
   let effectiveRole = "";
+  let authUserId = "";
+  let authEmail = "";
 
   if (authHeader?.startsWith("Bearer ")) {
     const supabase = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: authHeader } },
     });
     const { data: userData, error: userErr } = await supabase.auth.getUser();
-    if (!userErr && userData.user) {
+    if (userErr) {
+      console.warn("[send-brimot-invoice] auth getUser failed", userErr.message);
+    } else if (userData.user) {
+      authUserId = userData.user.id;
+      authEmail = userData.user.email || "";
+
       const { data: prof, error: profErr } = await supabaseAdmin
-        .from("utilisateurs")
+        .from("profiles")
         .select("role")
-        .eq("id", userData.user.id)
+        .eq("id", authUserId)
         .maybeSingle();
       if (profErr) {
-        console.error("utilisateurs lookup", profErr);
+        console.error("[send-brimot-invoice] profiles lookup failed", {
+          userId: authUserId,
+          email: authEmail,
+          error: profErr,
+        });
         return json({ ok: false, error: "Impossible de vérifier votre rôle (base de données)." });
       }
       effectiveRole = String(prof?.role || "");
-    }
-  }
 
-  if (!effectiveRole) {
-    const fallbackUserId = (req.headers.get("x-colixo-user-id") || "").trim();
-    const fallbackRole = (req.headers.get("x-colixo-user-role") || "").trim();
-    if (fallbackUserId && ["admin", "super_admin"].includes(fallbackRole)) {
-      const { data: prof, error: profErr } = await supabaseAdmin
-        .from("utilisateurs")
-        .select("id, role, actif")
-        .eq("id", fallbackUserId)
-        .maybeSingle();
-      if (profErr) {
-        console.error("fallback utilisateurs lookup", profErr);
-        return json({ ok: false, error: "Impossible de vérifier votre rôle (base de données)." });
-      }
-      if (prof && prof.actif !== false && ["admin", "super_admin"].includes(String(prof.role))) {
-        effectiveRole = String(prof.role);
-      }
+      console.info("[send-brimot-invoice] auth role check", {
+        userId: authUserId,
+        email: authEmail,
+        role: effectiveRole || null,
+      });
     }
+  } else {
+    console.warn("[send-brimot-invoice] missing bearer JWT");
   }
 
   if (!["admin", "super_admin"].includes(effectiveRole)) {
+    console.warn("[send-brimot-invoice] access denied", {
+      userId: authUserId || null,
+      email: authEmail || null,
+      role: effectiveRole || null,
+      reason: effectiveRole ? "insufficient_role" : "missing_profile_or_role",
+    });
     return json({
       ok: false,
       error:
