@@ -1,0 +1,486 @@
+(function () {
+  "use strict";
+
+  var AUTH_TIMEOUT_MS = (typeof window !== 'undefined' && window.AUTH_TIMEOUT_MS) || 8000;
+
+  function withTimeout(promise, ms, message) {
+    var timer;
+    var timeout = new Promise(function(_, reject) {
+      timer = setTimeout(function() { reject(new Error(message || 'Timeout')); }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(function() { clearTimeout(timer); });
+  }
+
+  function getDb() {
+    return window.SUPABASE_CLIENT || window.supabaseClient || null;
+  }
+
+  function href(path) {
+    if (typeof window.colixoHref === "function") return window.colixoHref(path);
+    return path;
+  }
+
+  function loginUrl(fresh) {
+    var base = href("/login/index.html");
+    return fresh ? base + (base.indexOf('?') >= 0 ? '&' : '?') + 'fresh=1' : base;
+  }
+
+  function normalizeRoles(roles) {
+    return Array.isArray(roles) ? roles.filter(Boolean) : [];
+  }
+
+  function roleHome(role) {
+    var routes = {
+      super_admin: "/admin/dashboard.html",
+      admin: "/admin/dashboard.html",
+      chauffeur: "/admin/driver-app.html",
+      magasinier: "/magasinier/dashboard.html",
+      client: "/admin/client/portal.html",
+      gestionnaire: "/admin/client/portal.html",
+      comptable: "/admin/client/portal.html",
+      sous_utilisateur: "/admin/client/portal.html"
+    };
+    return href(routes[role] || "/admin/client/portal.html");
+  }
+
+  /* ── Cookie helpers (survives localStorage clear by Edge privacy settings) ── */
+  function saveLegacyCodeCookie(code) {
+    if (!code) return;
+    try {
+      document.cookie = "colixo_code=" + encodeURIComponent(code) + "; max-age=2592000; path=/; SameSite=Strict";
+    } catch (e) {}
+  }
+
+  function getLegacyCodeCookie() {
+    try {
+      var m = document.cookie.match(/(?:^|;\s*)colixo_code=([^;]+)/);
+      return m ? decodeURIComponent(m[1]).trim().toUpperCase() : null;
+    } catch (e) { return null; }
+  }
+
+  function clearLegacyCodeCookie() {
+    try { document.cookie = "colixo_code=; max-age=0; path=/; SameSite=Strict"; } catch (e) {}
+  }
+
+  /* ── Storage helpers (localStorage + sessionStorage with mutual fallback) ── */
+  function clearLegacyUser() {
+    try { localStorage.removeItem("colixo_user"); } catch (e) {}
+    try { localStorage.removeItem("colixo_access_code"); } catch (e) {}
+    try { sessionStorage.removeItem("colixo_user"); } catch (e) {}
+    try { sessionStorage.removeItem("colixo_access_code"); } catch (e) {}
+    clearLegacyCodeCookie();
+  }
+
+  function setStoredItem(key, value) {
+    var saved = false;
+    try { localStorage.setItem(key, value); saved = true; } catch (e) {}
+    try { sessionStorage.setItem(key, value); saved = true; } catch (e) {}
+    return saved;
+  }
+
+  function setSessionItem(key, value) {
+    try { sessionStorage.setItem(key, value); return true; } catch (e) {}
+    return false;
+  }
+
+  function writeLoginHandoff(profile, code) {
+    if (!profile) return;
+    try {
+      window.name = 'COLIXO_LOGIN:' + JSON.stringify({ profile: profile, code: code, ts: Date.now() });
+    } catch (e) {}
+  }
+
+  function syncLegacyUser(profile, sessionOnly) {
+    if (!profile || !profile.id) return;
+    var code = profile.code_usr || profile.code || profile.code_acces || profile.code_connexion || getLegacyCode() || null;
+    var data = JSON.stringify({
+      id: profile.id,
+      role: profile.role || null,
+      nom: profile.nom || null,
+      prenom: profile.prenom || null,
+      email: profile.email || null,
+      telephone: profile.telephone || profile.tel || profile.phone || null,
+      code: code,
+      entreprise_id: profile.entreprise_id || null
+    });
+    if (sessionOnly) {
+      try { sessionStorage.setItem("colixo_user", data); } catch (e) {}
+    } else {
+      try { localStorage.setItem("colixo_user", data); } catch (e) {}
+      try { sessionStorage.setItem("colixo_user", data); } catch (e) {}
+    }
+    if (code) saveLegacyCodeCookie(code);
+  }
+
+  function readLegacyUser() {
+    try {
+      var raw = localStorage.getItem("colixo_user");
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    try {
+      var raw2 = sessionStorage.getItem("colixo_user");
+      if (raw2) return JSON.parse(raw2);
+    } catch (e) {}
+    return null;
+  }
+
+  function getLegacyCode() {
+    var legacyUser = readLegacyUser();
+    var code = legacyUser && (legacyUser.code || legacyUser.code_usr || legacyUser.code_acces || legacyUser.code_connexion);
+    if (!code) { try { code = localStorage.getItem("colixo_access_code"); } catch (e) {} }
+    if (!code) { try { code = sessionStorage.getItem("colixo_access_code"); } catch (e) {} }
+    if (!code) { code = getLegacyCodeCookie(); }
+    return code ? String(code).trim().toUpperCase() : null;
+  }
+
+  function firstRow(data) {
+    return Array.isArray(data) ? data[0] || null : data || null;
+  }
+
+  /* ── Cookie-based auto re-login (Edge clears localStorage between sessions) ── */
+  async function autoReloginFromCookie(allowedRoles) {
+    var code = getLegacyCodeCookie();
+    if (!code) return null;
+    var db = getDb();
+    if (!db) return null;
+    try {
+      var res = await db.rpc("login_with_code", { p_code: code });
+      if (res.error || !res.data) { clearLegacyCodeCookie(); return null; }
+      var profile = firstRow(res.data);
+      if (!profile || profile.actif === false) { clearLegacyCodeCookie(); return null; }
+      var allowed = normalizeRoles(allowedRoles);
+      if (allowed.length && allowed.indexOf(profile.role) === -1) return null;
+      syncLegacyUser(profile);
+      return {
+        session: null, authUser: null,
+        profile: profile, userId: profile.id,
+        role: profile.role, isLegacy: true,
+        mismatch: false, profileLookup: "cookie"
+      };
+    } catch (e) { return null; }
+  }
+
+  async function getVerifiedSession() {
+    var db = getDb();
+    if (!db) return { session: null, authUser: null };
+
+    var sessionRes = await withTimeout(
+      db.auth.getSession(),
+      AUTH_TIMEOUT_MS,
+      "Connexion trop longue. Edge bloque probablement une ancienne session: reconnectez-vous."
+    );
+    var session = sessionRes && sessionRes.data ? sessionRes.data.session : null;
+    if (!session) return { session: null, authUser: null };
+
+    var userRes = await withTimeout(
+      db.auth.getUser(),
+      AUTH_TIMEOUT_MS,
+      "Verification de session trop longue. Reconnectez-vous."
+    );
+    var authUser = userRes && userRes.data ? userRes.data.user : null;
+
+    if (!authUser) {
+      // Purge locale sans appel réseau — signOut() peut bloquer indéfiniment si le JWT est invalide
+      try {
+        Object.keys(localStorage).forEach(function(k) {
+          if (k.indexOf('sb-') === 0 && k.indexOf('-auth-') !== -1) localStorage.removeItem(k);
+        });
+      } catch (e) {}
+      return { session: null, authUser: null };
+    }
+
+    return { session: session, authUser: authUser };
+  }
+
+  async function loadProfileFromAuth(authUser) {
+    var db = getDb();
+    if (!db || !authUser) {
+      return { profile: null, lookup: null, mismatch: false };
+    }
+
+    var byId = await withTimeout(
+      db
+        .from("utilisateurs")
+        .select("*")
+        .eq("id", authUser.id)
+        .maybeSingle(),
+      AUTH_TIMEOUT_MS,
+      "Chargement du profil trop long."
+    );
+    if (byId.error) throw byId.error;
+    if (byId.data) {
+      return { profile: byId.data, lookup: "id", mismatch: false };
+    }
+
+    if (!authUser.email) {
+      return { profile: null, lookup: "id", mismatch: false };
+    }
+
+    var byEmail = await withTimeout(
+      db
+        .from("utilisateurs")
+        .select("*")
+        .eq("email", authUser.email)
+        .maybeSingle(),
+      AUTH_TIMEOUT_MS,
+      "Chargement du profil trop long."
+    );
+    if (byEmail.error) throw byEmail.error;
+
+    return {
+      profile: byEmail.data || null,
+      lookup: byEmail.data ? "email" : null,
+      mismatch: !!byEmail.data
+    };
+  }
+
+  async function loadLegacyProfile(legacyRoles) {
+    var allowed = normalizeRoles(legacyRoles);
+    if (!allowed.length) return null;
+
+    var legacyUser = readLegacyUser();
+    if (!legacyUser || !legacyUser.id || !legacyUser.role) return null;
+    if (allowed.indexOf(legacyUser.role) === -1) return null;
+
+    var db = getDb();
+    if (!db) return null;
+
+    var legacyCode = getLegacyCode();
+    if (!legacyCode) {
+      clearLegacyUser();
+      return null;
+    }
+
+    var res = await withTimeout(
+      db.rpc("get_code_user_profile", {
+        p_user_id: legacyUser.id,
+        p_code: legacyCode
+      }),
+      AUTH_TIMEOUT_MS,
+      "Connexion trop longue. Rechargez la page puis reessayez."
+    );
+    if (res.error) throw res.error;
+
+    var profile = firstRow(res.data);
+    if (!profile || profile.actif === false) {
+      clearLegacyUser();
+      return null;
+    }
+    if (allowed.indexOf(profile.role) === -1) {
+      clearLegacyUser();
+      return null;
+    }
+
+    syncLegacyUser(profile);
+    return {
+      session: null,
+      authUser: null,
+      profile: profile,
+      userId: profile.id,
+      role: profile.role,
+      isLegacy: true,
+      mismatch: false,
+      profileLookup: "legacy"
+    };
+  }
+
+  async function colixoGetAuthContext(options) {
+    var opts = options || {};
+    var routeRoles = normalizeRoles(opts.roles);
+    var legacyRoles = normalizeRoles(opts.legacyRoles);
+    var legacyUser = readLegacyUser();
+
+    if (legacyUser && legacyRoles.length && legacyRoles.indexOf(legacyUser.role) !== -1) {
+      try {
+        var legacyCtx = await loadLegacyProfile(legacyRoles);
+        if (legacyCtx && legacyCtx.profile) return legacyCtx;
+      } catch (e) {
+        clearLegacyUser();
+      }
+    }
+
+    if (opts.skipSupabaseSession === true) {
+      return null;
+    }
+
+    var sessionCtx = { session: null, authUser: null };
+    try {
+      sessionCtx = await getVerifiedSession();
+    } catch (sessionErr) {
+      // Session Supabase corrompue ou timeout — purge locale sans appel réseau, puis fallback cookie
+      console.warn('[Colixo] Session inaccessible:', sessionErr && sessionErr.message);
+      try {
+        Object.keys(localStorage).forEach(function(k) {
+          if (k.indexOf('sb-') === 0 && k.indexOf('-auth-') !== -1) localStorage.removeItem(k);
+        });
+      } catch (e) {}
+    }
+    if (sessionCtx.authUser) {
+      var profileCtx = await loadProfileFromAuth(sessionCtx.authUser);
+      var profile = profileCtx.profile;
+
+      if (profile && profile.actif === false) {
+        try { await getDb().auth.signOut(); } catch (e) {}
+        clearLegacyUser();
+        return null;
+      }
+
+      if (profile) { syncLegacyUser(profile); }
+
+      if (!profile) {
+        return {
+          session: sessionCtx.session,
+          authUser: sessionCtx.authUser,
+          profile: null,
+          userId: sessionCtx.authUser.id,
+          role: null,
+          isLegacy: false,
+          mismatch: false,
+          profileLookup: null
+        };
+      }
+
+      if (!routeRoles.length || routeRoles.indexOf(profile.role) !== -1) {
+        return {
+          session: sessionCtx.session,
+          authUser: sessionCtx.authUser,
+          profile: profile,
+          userId: profile.id,
+          role: profile.role,
+          isLegacy: false,
+          mismatch: profileCtx.mismatch,
+          profileLookup: profileCtx.lookup
+        };
+      }
+
+      return {
+        session: sessionCtx.session,
+        authUser: sessionCtx.authUser,
+        profile: null,
+        userId: profile.id,
+        role: profile.role,
+        isLegacy: false,
+        mismatch: profileCtx.mismatch,
+        profileLookup: profileCtx.lookup,
+        roleMismatch: true
+      };
+    }
+
+    // Try legacy profile from storage (user ID + code)
+    var legacyResult = await loadLegacyProfile(legacyRoles);
+    if (legacyResult) return legacyResult;
+
+    // Cookie fallback: Edge privacy settings can wipe localStorage between sessions.
+    // If a cookie code exists, silently re-authenticate without asking the user.
+    var allRoles = legacyRoles.concat(routeRoles.filter(function(r) { return legacyRoles.indexOf(r) === -1; }));
+    var cookieCtx = await autoReloginFromCookie(allRoles);
+    if (cookieCtx) return cookieCtx;
+
+    return null;
+  }
+
+  async function colixoRequireRoute(options) {
+    var opts = options || {};
+    var ctx = await colixoGetAuthContext(opts);
+    if (ctx && ctx.profile) return ctx;
+
+    if (opts.redirectOnFail === false) return null;
+
+    if (ctx && ctx.roleMismatch && opts.signOutOnRoleMismatch) {
+      var db = getDb();
+      if (db) { try { await db.auth.signOut(); } catch (e) {} }
+      clearLegacyUser();
+      window.location.replace(opts.redirectTo ? opts.redirectTo + (opts.redirectTo.indexOf('?') >= 0 ? '&' : '?') + 'fresh=1' : loginUrl(true));
+      return null;
+    }
+
+    // Role mismatch known from session → send to correct home
+    if (ctx && ctx.roleMismatch && ctx.role) {
+      window.location.replace(roleHome(ctx.role));
+      return null;
+    }
+
+    // No session context — check localStorage for a stored user (e.g. super_admin visiting client portal)
+    var storedUser = readLegacyUser();
+    if (storedUser && storedUser.role) {
+      window.location.replace(roleHome(storedUser.role));
+      return null;
+    }
+
+    // Truly unauthenticated → login with fresh=1 to prevent auto-redirect loop
+    window.location.replace(opts.redirectTo ? opts.redirectTo + (opts.redirectTo.indexOf('?') >= 0 ? '&' : '?') + 'fresh=1' : loginUrl(true));
+    return null;
+  }
+
+  async function colixoLogout(options) {
+    // Purge locale sans appel réseau — signOut() peut bloquer si le JWT est invalide
+    try {
+      Object.keys(localStorage).forEach(function(k) {
+        if (k.indexOf('sb-') === 0 && k.indexOf('-auth-') !== -1) localStorage.removeItem(k);
+      });
+    } catch (e) {}
+    clearLegacyUser();
+
+    // Tentative signOut en arrière-plan sans bloquer la déconnexion
+    var db = getDb();
+    if (db) { db.auth.signOut().catch(function() {}); }
+
+    var opts = options || {};
+    if (opts.redirectTo !== false) {
+      window.location.replace(opts.redirectTo || loginUrl());
+    }
+  }
+
+  async function requireAuth() {
+    var ctx = await colixoRequireRoute({ redirectTo: loginUrl() });
+    if (!ctx || !ctx.authUser) return null;
+    return ctx.authUser;
+  }
+
+  async function getCurrentProfile() {
+    var ctx = await colixoGetAuthContext({});
+    return ctx ? ctx.profile : null;
+  }
+
+  async function getActiveCgvVersion() {
+    var db = getDb();
+    if (!db) throw new Error("Client Supabase indisponible");
+
+    var res = await db
+      .from("cgv_versions")
+      .select("*")
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (res.error) throw res.error;
+
+    return (
+      res.data || {
+        version_code: "v1.0_colixo_2026",
+        title: "Conditions Generales de Transport Colixo",
+        content_html: "<p>Aucune version active trouvee.</p>"
+      }
+    );
+  }
+
+  // Note: on ne lie PAS SIGNED_OUT de Supabase au clearLegacyUser.
+  // L'auth par code est indépendante de la session Supabase.
+  // La déconnexion explicite passe par colixoLogout() qui appelle clearLegacyUser().
+  // Lier SIGNED_OUT causait une déconnexion intempestive lors de l'expiration du token.
+
+  window.colixoRoleHome = roleHome;
+  window.colixoLogout = colixoLogout;
+  window.colixoStoreLegacyLogin = function (profile, code) {
+    writeLoginHandoff(profile, code);
+    var saved = syncLegacyUser(Object.assign({}, profile || {}, { code: code || getLegacyCode() }), true);
+    if (code) saved = setSessionItem("colixo_access_code", String(code).trim().toUpperCase()) || saved;
+  };
+  window.colixoGetAuthContext = colixoGetAuthContext;
+  window.colixoRequireRoute = colixoRequireRoute;
+  window.colixoGetStoredCode = getLegacyCode;
+  window.requireAuth = requireAuth;
+  window.getCurrentProfile = getCurrentProfile;
+  window.getActiveCgvVersion = getActiveCgvVersion;
+})();
