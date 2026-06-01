@@ -93,11 +93,13 @@
   function syncLegacyUser(profile, sessionOnly) {
     if (!profile || !profile.id) return;
     var code = profile.code_usr || profile.code || profile.code_acces || profile.code_connexion || getLegacyCode() || null;
+    var fullName = profile.full_name || [profile.prenom, profile.nom].filter(Boolean).join(" ").trim() || null;
     var data = JSON.stringify({
       id: profile.id,
       role: profile.role || null,
       nom: profile.nom || null,
       prenom: profile.prenom || null,
+      full_name: fullName,
       email: profile.email || null,
       telephone: profile.telephone || profile.tel || profile.phone || null,
       code: code,
@@ -200,38 +202,15 @@
 
     var byId = await withTimeout(
       db
-        .from("utilisateurs")
-        .select("*")
+        .from("profiles")
+        .select("id,email,full_name,role,updated_at")
         .eq("id", authUser.id)
         .maybeSingle(),
       AUTH_TIMEOUT_MS,
       "Chargement du profil trop long."
     );
     if (byId.error) throw byId.error;
-    if (byId.data) {
-      return { profile: byId.data, lookup: "id", mismatch: false };
-    }
-
-    if (!authUser.email) {
-      return { profile: null, lookup: "id", mismatch: false };
-    }
-
-    var byEmail = await withTimeout(
-      db
-        .from("utilisateurs")
-        .select("*")
-        .eq("email", authUser.email)
-        .maybeSingle(),
-      AUTH_TIMEOUT_MS,
-      "Chargement du profil trop long."
-    );
-    if (byEmail.error) throw byEmail.error;
-
-    return {
-      profile: byEmail.data || null,
-      lookup: byEmail.data ? "email" : null,
-      mismatch: !!byEmail.data
-    };
+    return { profile: byId.data || null, lookup: "id", mismatch: false };
   }
 
   async function loadLegacyProfile(legacyRoles) {
@@ -402,7 +381,7 @@
 
     // No session context — check localStorage for a stored user (e.g. super_admin visiting client portal)
     var storedUser = readLegacyUser();
-    if (storedUser && storedUser.role) {
+    if (!opts.requireSupabaseSession && storedUser && storedUser.role) {
       window.location.replace(roleHome(storedUser.role));
       return null;
     }

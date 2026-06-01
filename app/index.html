@@ -759,14 +759,16 @@ async function init() {
     try {
         const auth = await window.colixoRequireRoute({
             roles: ['admin','super_admin'],
-            legacyRoles: ['admin','super_admin'],
+            requireSupabaseSession: true,
+            signOutOnRoleMismatch: true,
             redirectTo: '../login/'
         });
         if (!auth) return;
         currentUser = auth.profile;
         if (!currentUser) return;
-        $('userName').textContent = (currentUser.prenom||'')+' '+(currentUser.nom||'');
-        $('userAv').textContent = (currentUser.prenom||'?')[0].toUpperCase();
+        const displayName = currentUser.full_name || [currentUser.prenom, currentUser.nom].filter(Boolean).join(' ') || currentUser.email || '';
+        $('userName').textContent = displayName;
+        $('userAv').textContent = (displayName || '?')[0].toUpperCase();
         await Promise.all([loadClients(), loadProduits()]);
         await loadFactures();
     } catch(e) {

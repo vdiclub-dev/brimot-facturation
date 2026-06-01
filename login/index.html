@@ -178,7 +178,7 @@
   </div>
 
   <h1>Connexion</h1>
-  <p class="subtitle">Accès réservé aux administrateurs Brimot.</p>
+  <p class="subtitle">Portail interne de facturation Brimot.</p>
 
   <div class="alert" id="alertBox"></div>
 
@@ -260,38 +260,37 @@
     }
 
     setLoading(true);
-    showAlert('info', 'Vérification en cours…');
+    showAlert('info', 'Vérification en cours...');
 
     try {
       // 1. Authentification Supabase
       var res = await db.auth.signInWithPassword({ email: email, password: password });
       if (res.error) {
-        throw new Error(res.error.message || 'Identifiants invalides.');
+        setLoading(false);
+        showAlert('error', 'Identifiants incorrects.');
+        return;
       }
 
-      // 2. Vérifier le rôle admin dans la table `utilisateurs`
+      // 2. Vérifier le rôle admin dans public.profiles via auth.users.id
       var ctx = await window.colixoGetAuthContext({
         roles: ['admin', 'super_admin'],
         redirectOnFail: false
       });
 
-      if (!ctx || !ctx.profile) {
+      if (!ctx || !ctx.profile || !['admin', 'super_admin'].includes(ctx.role)) {
         await db.auth.signOut();
-        throw new Error('Compte non trouvé dans la base Brimot. Contactez l\'administrateur.');
-      }
-
-      if (!['admin', 'super_admin'].includes(ctx.role)) {
-        await db.auth.signOut();
-        throw new Error('Accès refusé : rôle insuffisant (' + (ctx.role || 'inconnu') + ').');
+        setLoading(false);
+        showAlert('error', 'Accès réservé aux administrateurs Brimot.');
+        return;
       }
 
       // 3. Succès → application
-      showAlert('info', '✅ Connexion réussie. Redirection…');
+      showAlert('info', 'Connexion réussie. Redirection...');
       window.location.replace('../app/');
 
     } catch (err) {
       setLoading(false);
-      showAlert('error', '❌ ' + (err.message || 'Erreur de connexion.'));
+      showAlert('error', err && err.message ? err.message : 'Erreur de connexion.');
     }
   });
 })();
