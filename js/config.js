@@ -15,7 +15,7 @@ window.AUTH_TIMEOUT_MS = 8000;
 // Injecter ces valeurs via votre hébergeur — ne jamais committer les vraies clés.
 window.SUPABASE_CONFIG = {
     url:    'https://iubbsnntcreneakbdkmv.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhc3FvbmZybmRxdmhzeWFrcWt6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2NzEwMzEsImV4cCI6MjA5NTI0NzAzMX0.vx-yv061lrKNNlDI6ZfZEDXI4e47hLHff9WM3CA5tag',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml1YmJzbm50Y3JlbmVha2Jka212Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI1NzI1MDYsImV4cCI6MjA4ODE0ODUwNn0.FzMgCZxNIej1skSIc8UAGiODcZEZW1GCWZwBfonm_1Y',
     // Alias utilisé par facturation.html pour l'appel à l'Edge Function
     get key() { return this.anonKey; }
 };
