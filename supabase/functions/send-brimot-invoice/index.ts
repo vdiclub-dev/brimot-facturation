@@ -63,6 +63,55 @@ function bodyTextWithoutViewUrl(text: string, viewUrl: string): string {
   return t;
 }
 
+function getAppBaseUrl(req: Request): string | null {
+  const configured = (Deno.env.get("BRIMOT_APP_URL") || "").trim();
+  if (configured) return configured.replace(/\/$/, "").replace(/\/app$/, "");
+
+  const origin = (req.headers.get("origin") || "").trim();
+  if (origin === "https://brimot-facturation.didier-gysling.workers.dev") {
+    return origin.replace(/\/$/, "");
+  }
+
+  console.error("[send-brimot-invoice] BRIMOT_APP_URL missing; cannot build invoice view url", {
+    origin: origin || null,
+  });
+  return null;
+}
+
+function extractInvoiceViewQuery(rawViewUrl: string): string {
+  if (!rawViewUrl) return "";
+
+  try {
+    const url = new URL(rawViewUrl, "https://brimot.invalid");
+    const params = new URLSearchParams(url.search);
+    if (!params.get("data") && url.hash.startsWith("#data=")) {
+      const hashParams = new URLSearchParams(url.hash.slice(1));
+      const hashData = hashParams.get("data");
+      if (hashData) params.set("data", hashData);
+    }
+    return params.toString();
+  } catch {
+    return "";
+  }
+}
+
+function buildInvoiceViewUrl(req: Request, rawViewUrl: string): string {
+  if (!rawViewUrl) return "";
+
+  const query = extractInvoiceViewQuery(rawViewUrl);
+  if (!query) {
+    console.error("[send-brimot-invoice] invoice view url missing encoded data", {
+      rawViewUrl,
+    });
+    return "";
+  }
+
+  const appBaseUrl = getAppBaseUrl(req);
+  if (!appBaseUrl) return "";
+
+  return `${appBaseUrl}/facture-view.html?${query}`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -143,13 +192,21 @@ Deno.serve(async (req) => {
   const to = (payload.to ?? "").trim();
   const subject = (payload.subject ?? "").trim() || "Facture Brimot";
   const bodyText = (payload.body ?? "").trim();
-  const viewUrl = (payload.view_url ?? "").trim();
+  const rawViewUrl = (payload.view_url ?? "").trim();
+  const viewUrl = buildInvoiceViewUrl(req, rawViewUrl);
   const pdfB64 = (payload.pdf_base64 ?? "").replace(/[\r\n\s]/g, "");
   const pdfName = (payload.pdf_filename ?? "facture.pdf").trim() || "facture.pdf";
 
   if (!to || !to.includes("@")) {
     return json({ ok: false, error: "Adresse email destinataire invalide." });
   }
+  if (rawViewUrl && !viewUrl) {
+    return json({
+      ok: false,
+      error: "Configuration serveur : impossible de construire le lien public de la facture.",
+    });
+  }
+  console.info(`[send-brimot-invoice] invoice view url = ${viewUrl || "(none)"}`);
 
   const brevoKey = Deno.env.get("BREVO_API_KEY")?.trim();
   const from = (
@@ -171,7 +228,8 @@ Deno.serve(async (req) => {
     });
   }
 
-  const bodyForHtml = bodyTextWithoutViewUrl(bodyText, viewUrl);
+  const bodyWithoutRawViewUrl = bodyTextWithoutViewUrl(bodyText, rawViewUrl);
+  const bodyForHtml = bodyTextWithoutViewUrl(bodyWithoutRawViewUrl, viewUrl);
   const bodyHtml =
     `<div style="font-family:Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">` +
     escapeHtml(bodyForHtml).split("\n").join("<br>") +
@@ -183,7 +241,7 @@ Deno.serve(async (req) => {
       : "") +
     `</div>`;
 
-  const textBody = bodyTextWithoutViewUrl(bodyText, viewUrl);
+  const textBody = bodyTextWithoutViewUrl(bodyWithoutRawViewUrl, viewUrl);
   const brevoBody: Record<string, unknown> = {
     sender: { email: from },
     to: [{ email: to }],
