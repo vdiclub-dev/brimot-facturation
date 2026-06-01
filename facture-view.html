@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
@@ -11,7 +11,9 @@
     <title>Facture — Brimot Nettoyage</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
     <!-- QR Code Swiss Payment Standard — fichier local (évite blocage CDN) -->
-    <script src="qrcode.min.js"></script>
+    <script src="js/qrcode.min.js"></script>
+    <!-- Config Brimot — fournit window.BRIMOT_CONFIG (pas d'auth requise ici) -->
+    <script data-cfasync="false" src="js/config.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body {
@@ -206,15 +208,17 @@
 </div>
 
 <script>
-/* ─── Constantes Brimot ─── */
-var IBAN_BRIMOT = 'CH95 3000 5291 1478 8940 K';
-var NOM_BRIMOT  = 'Brimot Nettoyage';
-var RUE_BR      = 'Impasse des Griottes 3';
-var NPA_BR      = '1462';
-var VILLE_BR    = 'Yvonand';
-var TEL_BR      = '+41 79 646 74 42';
-var MAIL_BR     = 'info@brimot.ch';
-var LOGO_BR_URL = 'https://drive.google.com/thumbnail?id=1nze-k7va7oY5OQFZeUXMMica9GQYnNsq&sz=w1000';
+/* ─── Constantes Brimot (depuis window.BRIMOT_CONFIG, défini dans js/config.js) ─── */
+var _cfg        = window.BRIMOT_CONFIG || {};
+var IBAN_BRIMOT = _cfg.iban        || 'CH95 3000 5291 1478 8940 K';
+var NOM_BRIMOT  = _cfg.companyName || 'Brimot Nettoyage';
+var RUE_BR      = _cfg.address     || 'Impasse des Griottes 3';
+var _parts      = (_cfg.postalCity || '1462 Yvonand').split(' ');
+var NPA_BR      = _parts[0] || '1462';
+var VILLE_BR    = _parts.slice(1).join(' ') || 'Yvonand';
+var TEL_BR      = _cfg.phone    || '+41 79 646 74 42';
+var MAIL_BR     = _cfg.email    || 'info@brimot.ch';
+var LOGO_BR_URL = _cfg.logoUrl  || '';
 
 function splitStreetAndBuilding(address) {
     var value = String(address || '').trim();
