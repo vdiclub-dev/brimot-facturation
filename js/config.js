@@ -14,8 +14,8 @@ window.AUTH_TIMEOUT_MS = 8000;
 // ── Supabase ─────────────────────────────────────────────────
 // Injecter ces valeurs via votre hébergeur — ne jamais committer les vraies clés.
 window.SUPABASE_CONFIG = {
-    url:     window.__ENV_SUPABASE_URL__     || 'REMPLACER_PAR_VOTRE_URL_SUPABASE',
-    anonKey: window.__ENV_SUPABASE_ANON_KEY__ || 'REMPLACER_PAR_VOTRE_CLE_ANON_PUBLIQUE',
+    url:    'https://casqonfrndqvhsyakqkz.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhc3FvbmZybmRxdmhzeWFrcWt6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2NzEwMzEsImV4cCI6MjA5NTI0NzAzMX0.vx-yv061lrKNNlDI6ZfZEDXI4e47hLHff9WM3CA5tag',
     // Alias utilisé par facturation.html pour l'appel à l'Edge Function
     get key() { return this.anonKey; }
 };
